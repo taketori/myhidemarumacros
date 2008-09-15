@@ -1,0 +1,332 @@
+// dispkeyfunc.mac
+// キーに割り当てられた機能を表示する。
+// Copyright (C) 2006 taketori <taketori@x10d.jp>
+// http://www.x10d.jp/
+// 起動後、任意のキーを押せばそのキーに割り当てられた機能をメニュー形式で表示する。TODO: メニューから選ばなかったら、押したキーが所属するグループのキーに割り当てられている機能を表で表示する。
+//		C  :コピー
+//		CS :引用符付きコピー
+//		C A:追加コピー
+// OBSOLUTE: キーを押さずにしばらく待てば、ユーザが設定したマクロが動く。（KEY.TXTを表示するマクロなどを登録しておくと便利かも）
+// TODO: 起動させたのと同じキーを連打したら、そのキーに関係したキーの表を表示する。（「ファンクションキー表示」みたいに ）。
+// TODO: メニューを表示しているときに、カーソルorマウスで選択するorニーモニックキーを押すか（[本文に入力]モードの時は）該当の修飾キー（表の時は該当のキー）を押したら、選択したキーに割り当てられている機能を実行する。
+// http://www6.ocn.ne.jp/~bouz/ にも似たものが....。orz
+
+debuginfo 0;
+
+//TODO: 設定を別ファイルに移動する
+//表示するかどうか。キーリスト=1、キーテーブル=2、本文に入力=4としたときの論理和。
+//「本文に入力」にすると、リストやテーブルをテキストにして現在編集中の秀丸に表示する。ニーモニックはないが、表示するものを修飾キーの変化で動的に変更&コマンド起動したり、テーブル表示の時でもコマンドが実行できるようになる。
+//値が0の時は、「ESCメニュー」のように一定時間だけキーを受け付けるようになる。このとき、Hm.rscに記載されているコマンドを実行する。（たとえば秀丸でCtrl+Cにコピー機能が割り当てられていれば、Ctrl+Cを押すことで「コピー」機能を実行するが、Hm.rscの[MACRO]セクションに「コピー = refcopy」というような、特定のコマンドが記載されていたら、その機能を実行する。）
+//（キーテーブルは、情報提供の位置づけなので、「本文に入力」しないときはコマンドを実行できない。）
+#IsDisp = 3;
+//キーリストを表示するまでの時間（ミリ秒）。
+#TimeToDisp = 1000;
+//A=1,S=2,C=4としたときの論理和。CSAいずれか(いずれも大文字)を指定すると、その文字がニーモニックになる。
+//例："0 4C 2S 6C 1A 5A 3A 7A"→1行目は修飾キーとの組み合わせがないときのコマンドを表示、2行目はCtrlキーと組み合わせたときのコマンドをメニューのCtrlに該当する文字の前に & をつけて表示....、
+$MenuItemDispOrder = "0 4C 2S 6C 1A 5A 3A 7A";		//イメージとしては "  &C &S &CS &A &AC &AS &ACS"みたいな感じ。
+//メニュー項目。$N=ニーモニック(修飾キーor秀丸と同じ),$M=修飾キー(Shift/Alt/Ctrl),$K=文字キー,$F=機能名orマクロ/メニューの登録名, $P=(OBSOLUTE)マクロの時はマクロファイル名,$$=$に置換される。
+$MenuItemStr = "$M$K\t$N\t: $F";
+//$Mで、表示する修飾キーとその順番。
+//"4Ct 2Sh 1Al"のように数字＋文字列＋半角空白で区切る。
+//数字の意味は$MenuItemDispOrderと同じ。数字の後ろの文字列が$Mの部分として表示される文字列となる。
+//値が""or適切に設定されていないときは、秀丸のメニューで使われているのとほぼ同じニーモニックになる。
+//メニュー表示文字列はすべて同じ幅にしておくと見やすくなります。
+//例："4Ct 2Sh 1Al"→メニューに表示する文字列は、"CtShAl"。
+//TODO: 順番を任意にできるようにする。
+$MenuModDispOrder = "1A 2S 4C";
+//
+//$MenuModDispOrderの「メニュー表示文字列」代わりに表示する文字列。
+//メニュー表示文字列と同じ幅にしておくと見やすくなります。
+$ItemHeadSpaceChar = "　";
+//
+//$NでA/S/Cの代わりに秀丸のニーモニックを使うか。
+//TODO: $MenuModDispOrder=""の時に、秀丸のニーモニックを使うようにする。
+#UseHmNeamonic = 1;
+
+//選択したコマンドの実行方法。0=マクロの定義なければ中止。1=マクロ優先（マクロがなかったらsendmessage利用）。
+#ExecCommand = 1;
+//
+
+INIT:
+
+$AssignRegDll = macrodir + "\\AssignReg.dll";
+$KeyFile = currentmacrobasename + ".key";
+$IniFile = macrodir + "\\Hm.rsc";
+$TempMacro = macrodir + "\\" + currentmacrobasename + ".tmp";
+
+#IME = imestate;
+if( #IME )	imeswitch;
+
+MAIN:
+
+title currentmacrobasename + "(キーに割り当てられた機能を表示) - キー入力待ち";
+
+disablebreak;
+#StartTime = tickcount;
+while( tickcount < #StartTime + #TimeToDisp ){
+	#Key = keypressed;
+
+	//何かキーが押されて、かつリストを表示するとき
+	if( #Key && ( #IsDisp & 0x01 )){
+		$Key = getinistr( $IniFile, "CODEKEY", str(#Key) );
+		debuginfo "$Key:" + $Key + "=" + str(#Key);
+		if( $Key == "" )	continue;
+
+		//文字キーに関する配列を作る
+		call GetItem $Key, $IniFile, #AryItems;
+		#AryItems = ##return;
+
+		title currentmacrobasename + "(キーに割り当てられた機能を表示) - " + $Key;
+
+		//リストを表示
+		call DispList #AryItems, $MenuItemStr, (#IsDisp & 0x04);
+		if( ##return ){		//リストで何かを選択された時
+//TODO: 表示した結果がキー割り当て拡張系のマクロなら、そのマクロの設定ファイルを読み込んでさらに表示する。
+			call ExecCmd ##return - 1, $IniFile, #ExecCommand, $TempMacro;
+			break;
+		}else{
+			refreshdatetime;
+			#StartTime = tickcount;
+		}
+	}
+}
+
+//TODO: 表を表示するモード
+if(0){
+//表を表示する
+//refreshdatetime;
+#StartTime = tickcount;
+while( ( #IsDisp & 0x02 ) && tickcount < #StartTime + #TimeToDisp ){
+	call GetItem getinistr( $IniFile, "GROUPKEYS", getinistr( $IniFile, "KEYGROUP", $Key ) ), $IniFile, #AryItems;
+	call DispTable $Ary, ##return, #IsShortenStr, #IsDisp & 0x04;
+
+	//指定時間内に拡張キーが押されたら、そのキーのみ表示する。
+	//キーが押されたら指定時間を延長
+	//指定時間内に（拡張キーと）キーまたは数字キーが押されたら、その機能を実行する。
+	//指定時間内になにも押されなかったら、そのまま終了する。
+		if( result )	break;
+		else{
+			refreshdatetime;
+			#StartTime = tickcount;
+		}
+	$Key = getinistr( $IniFile, "CODEKEY", str(keypressed) );
+
+}
+}
+
+title 0;
+if( #IME )	imeswitch;
+
+endmacro;
+
+GetItem:
+//Arg: $機能名を表示するキー(形式は、"F1"とか"H-J"とか"Q,W,E"とかそれらの組み合わせとか。0はない。),
+//		$IniFile, #変数$Aryの行数
+//and: $Ary
+//Ret: $Aryの行数
+
+	//引数をSSV(Space区切り)風にする。
+	call ArgToSSV $$1, $$2;
+	$$arg = $$return;
+//	debuginfo "$$arg:" + $$arg;
+
+	if( ##3 ){
+		##ary_lines = ##3;		//1回しか使われないけど、念のため定義。
+	}else{
+		call MakeAry;
+		##ary_lines = ##return;		//1回しか使われないけど、念のため定義。
+	}
+
+	//現在定義されているキーを読み込む（AssignReg.dllの定法!?）
+	call LoadDll $AssignRegDll;
+	savekeyassign $KeyFile, 1;
+	if( !dllfunc( "readKeyFile", hidemarudir + "\\" + $KeyFile, 1 ) ) endmacro;
+
+//TODO: 設定されていない修飾キーは表示しない（単独キーの時とか同じグループ表示の時とか、修飾キーの有無はほぼ同じだと思うからテーブル表示のときでもいけるはず）
+
+	//$Aryに機能名を代入する。具体的には、$Ary[修飾キー(の組合せ)][文字キー] = "機能名"
+	while( ##i <= ##ary_lines ){
+		$$arg_temp = $$arg;
+		##j = 1;
+		//CSV風の$$argから各項目を取り出す
+		while( $$arg_temp != "" && $$arg_temp != " " ){
+			$$argv = leftstr( $$arg_temp, strstr( $$arg_temp, " " ) );
+//			debuginfo "$$argv=" + $$argv + ":$$arg_temp=" + $$arg_temp + ":";
+			debuginfo "$key:" + $Ary[##i] + $$argv ;
+			$Ary[##i][##j] = dllfuncstr( "getFuncNameFromKey", $Ary[##i] + $$argv );
+			if( strstr( $Ary[##i][##j], "マクロ" ) == 0 && $Ary[##i][##j] != "マクロ実行" ){
+				$Ary[##i][##j][0] = midstr( $Ary[##i][##j], 6, strlen( $Ary[##i][##j] ) );
+				$Ary[##i][##j][1] = dllfuncstr( "getMacroName", val($Ary[##i][##j][0]) );
+				$Ary[##i][##j][2] = dllfuncstr( "getMacroFilePath", val($Ary[##i][##j][0]) );
+				writeinistr $$2, "MACRO", $Ary[##i][##j], "execmacro \"" + $Ary[##i][##j][2] + "\";  ;;//WRITTEN by " + currentmacrobasename;
+			}
+			else if( strstr( $Ary[##i][##j], "メニュー" ) == 0 ){
+				$Ary[##i][##j][0] = midstr( $Ary[##i][##j], 8, strlen( $Ary[##i][##j] ) );
+				$Ary[##i][##j][1] = dllfuncstr( "getMenuTitle", val($Ary[##i][##j][0]) );
+//TODO: ESCにESCメニューを、Ctrl+1～9に該当のマクロを反映させる
+			}
+			debuginfo "i=" + str(##i) + ":j=" + str(##j) + ":func=" + $Ary[##i][##j] + ":macro=" + $Ary[##i][##j][0];
+			$$arg_temp = midstr( $$arg_temp, strlen( $$argv ) + 1, strlen( $$arg_temp ) );
+			##j = ##j + 1;
+		}
+		##i = ##i + 1;
+	}
+
+//TODO: 返値を##jにする。
+return ##i - 1;
+
+MakeAry:
+//$Ary配列のヘッダを設定する。具体的には $Ary[n] = "C&S"; $Ary[n][0] = "Ctrl+Shift+"; みたいな感じ。
+//Arg: $MenuItemDispOrder,
+//Ret: #項目数
+//and: $Ary
+
+	$$miorder = $MenuItemDispOrder;
+
+	call LoadDll hidemarudir + "\\HMJRE.DLL";
+
+	$$modrc[1][0] = "Alt+";	$$modrc[2][0] = "Shift+";	$$modrc[4][0] = "Ctrl+";
+	$$modrc[1][1] = "A";	$$modrc[2][1] = "S";		$$modrc[4][1] = "C";
+
+	##mipos = dllfunc( "FindRegular", "[0-7][CSA]?", $$miorder, 0 );
+	while( 0 <= ##mipos ){
+		##modkey = val( midstr( $$miorder, ##mipos, 1 ));
+		//if( dllfunc( "GetLastMatchLength" ) == 2 )		//COMMENTOUT: ニーモニック指定文字がないとき、次の文字は空白か存在しない（=CでもSでもAでもない）ので、判定をやめる。
+			$$ampkey = midstr( $$miorder, ##mipos + 1, 1);
+
+		##c = 0;
+		$$ehmod = $MenuModDispOrder + " ";
+		while( ##c <= 2 ){
+			##ampchar = val(leftstr( $$ehmod, 1 ));
+			$$ehchar = $ItemHeadSpaceChar;
+
+			if( ##modkey & ##ampchar ){
+				$Ary[##i] = $Ary[##i] + $$modrc[##ampchar][0];
+				//if( $$ampkey == $$modrc[##ampchar][1] )	$$amp = "&";		//COMMENTOUT:以下の行に変更
+				$$amp = midstr( "&", (ascii($$ampkey) - ascii($$modrc[##ampchar][1])) * (ascii($$ampkey) - ascii($$modrc[##ampchar][1])), 1);		//どうしてもifを使いたくないらしい(^^;
+				$$ehchar = $$amp + midstr( $$ehmod, 1, strstr( $$ehmod, " " ) - 1 );
+			}
+
+			$Ary[##i][0] = $Ary[##i][0] + $$ehchar;
+			##c = ##c + 1;
+			$$amp = "";
+			$$ehmod = midstr( $$ehmod, strstr( $$ehmod, " " ) + 1, strlen( $$ehmod ) );
+		}
+
+		##i = ##i + 1;
+		##mipos = dllfunc( "FindRegular", "[0-7][CSA]?", $$miorder, ##mipos + dllfunc("GetLastMatchLength") );
+		debuginfo str(##mipos);
+	}
+
+	freedll;
+
+return ##i - 1;
+
+ArgToSSV:
+//$引数, $IniFile
+
+	call LoadDll hidemarudir + "\\HMJRE.DLL";
+
+	while( 0 <= ##pos ){
+		$$item = midstr( $$1, ##pos, dllfunc( "FindRegular", " ", $$1 + " ", ##pos + 1) );
+//		debuginfo "ArgToSSV$$item:" + $$item;
+		##pos = dllfunc( "FindRegular", " ", $$1 + " ", ##pos + 1 );
+//		debuginfo "ArgToSSV##pos:" + str(##pos);
+
+		if( 0 <= strstr( $$item, "-" ) ){
+			##begin = getininum( $$2, "KEYCODE", leftstr( $$item, strstr( $$item, "-" ) ) );
+			##end = getininum( $$2, "KEYCODE", midstr( $$item, strstr( $$item, "-" ) + 1, strlen( $$item ) ) );
+//			debuginfo str(##begin) + ":" + str(##end);
+			while( ##begin + ##i <= ##end ){
+				$$ret = $$ret + getinistr( $$2, "CODEKEY", str(##begin + ##i) ) + " ";
+				##i = ##i + 1;
+			}
+		}else{
+			$$ret = $$ret + $$item + " ";
+		}
+	}
+//	debuginfo "$$ret:" + $$ret;
+
+	freedll;
+
+return $$ret;
+
+LoadDll:
+//Arg: $DLLファイル名
+//Ret: 0(というか、returnできるときは無事にロードできたとき。失敗したときはマクロ終了)
+
+	loaddll $$1;
+	if( !result ){
+		message $$1 + " のロードに失敗しました。";
+		endmacro;
+	}
+
+return 0;
+
+DispList:
+//Arg: #$Aryの行数, $MenuItemStr, #本文に表示するかどうか
+//and: $Ary, $Key
+//Ret: #メニューの選択した項目（$Aryの番号と同じ）
+
+	while( ##i <= ##1 ){
+		$$menuary[##i] = $$2;
+		if( strstr( $$2, "$F" ) != -1 ){
+			$$func = $Ary[##i][1];
+			if( strstr( $$func, "マクロ" ) == 0 )	$$func = $Ary[##i][1][1];
+			if( strstr( $$func, "メニュー" ) == 0 )	$$func = $Ary[##i][1][1] + " >>";
+			$$menuary[##i] = leftstr( $$menuary[##i], strstr( $$menuary[##i], "$F" ) ) + $$func + rightstr( $$menuary[##i], strlen($$menuary[##i]) - strstr( $$menuary[##i], "$F" ) - 2 );
+		}
+		if( strstr( $$2, "$K" ) != -1 ){
+			$$menuary[##i] = leftstr( $$menuary[##i], strstr( $$menuary[##i], "$K" ) ) + $Key + rightstr( $$menuary[##i], strlen($$menuary[##i]) - strstr( $$menuary[##i], "$K" ) - 2 );
+		}
+		if( strstr( $$2, "$M" ) != -1 ){
+			debuginfo "$Ary[##i]:" + $Ary[##i] + "<";
+			$$menuary[##i] = leftstr( $$menuary[##i], strstr( $$menuary[##i], "$M" ) ) + $Ary[##i] + rightstr( $$menuary[##i], strlen($$menuary[##i]) - strstr( $$menuary[##i], "$M" ) - 2 );
+		}
+		if( strstr( $$2, "$N" ) != -1 ){
+			if( #UseHmNeamonic == 1 )	$Ary[##i][0] = "&" + getinistr( $IniFile, "NEAMONIC", $Ary[##i][1]);
+			debuginfo "$Ary[##i][0]:" + $Ary[##i][0] + "<";
+			$$menuary[##i] = leftstr( $$menuary[##i], strstr( $$menuary[##i], "$N" ) ) + $Ary[##i][0] + rightstr( $$menuary[##i], strlen($$menuary[##i]) - strstr( $$menuary[##i], "$N" ) - 2 );
+		}
+		//if( strstr( $$2, "$P" ) != -1 )
+		//	$$menuary[##i] = leftstr( $$menuary[##i], strstr( $$menuary[##i], "$P" ) ) + $Ary[##i][1][2] + rightstr( $$menuary[##i], strlen($$menuary[##i]) - strstr( $$menuary[##i], "$P" ) - 2 );
+
+		##i = ##i + 1;
+	}
+
+//TODO: 本文に表示するモード
+	menuarray $$menuary, ##1 + 1;
+
+return result;
+
+DispTable:
+
+
+
+return;
+
+ExecCmd:
+//Arg: #メニューで選択したresult, $IniFile, #ExecCommand, $TempMacro
+//and: $Ary
+//Ret: #実行結果
+
+	##thishdl = hidemaruhandle(0);
+	$$execmacro = getinistr( $$2, "MACRO", $Ary[##1][1] );
+		debuginfo $$execmacro;
+	if( $$execmacro == "" && ##3 ){
+		##sendkey = getininum( $$2, "MESSAGE", $Ary[##1][1] );
+		##result = sendmessage( ##thishdl, 0x0111, ##sendkey, 0 );
+	}else{
+		openfile "/n /h " + $$4;
+		selectall;
+		insert "//This file was automatically generated by " + currentmacrobasename + ".\n//You CAN modify or delete.\n//\n\n";
+		insert $$execmacro + ";";
+		save;
+		##temphdl = hidemaruhandle(0);
+		setactivehidemaru ##thishdl;
+		closehidemaru ##temphdl;
+		execmacro $$4;
+		##result = result;
+	}
+
+return ##result;

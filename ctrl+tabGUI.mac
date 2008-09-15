@@ -1,0 +1,344 @@
+//ctrl+tabGUI.mac
+// Copyright (C) 2007 taketori <taketori@x10d.jp>
+// http://www.x10d.jp/
+//任意のキー（ctrl+何か。tabを想定）を押すことで、タブを表示する。
+$this_macro = "Ctrl+Tabマクロ";
+
+debuginfo 0;
+debuginfo "==========";
+
+// ユーザ設定
+//*逆順に表示するときの修飾キー。
+// 1=Shift, 2=Ctrl, 4=Alt
+#ReverseMod = 1;
+//
+//TODO: *マクロを自動的に終了する条件。
+// 「時間」とは、以下の #time_to_exit/#time_to_exit_if_change で設定する時間が経過したとき。（時間内であっても、Enter/Escで終了できます。）
+// 「キーボード」とは、起動時に押されていた Ctrl/Alt/Shift キーのいずれも放された時、かつタブコントロールにフォーカスがある時。（キーを放しても、#time_to_change_focusで設定する時間以内、またはコンボボックスにカーソルがあるときは、終了しません。）
+//TODO: また、本設定が0または起動時いずれのキーも押下されていない場合は、[OK][キャンセル]ボタンを表示します。
+// 0=時間。1=キーボードまたは時間。2=キーボード。
+#exit_cond = 1;
+//
+//*終了するまでの時間(ミリ秒)
+// ダイアログのアクティブタブが変更されていない、または起動時と同一のタブにフォーカスがあるとき。
+#time_to_exit = 3000;
+// ダイアログのアクティブタブが変更された後。
+#time_to_exit_if_change = 5000;
+// 起動時と同一のタブにフォーカスがあり、全てのキーを放した後(#exit_condが1以上の時に有効)。
+#time_to_change_focus = 500;
+//
+//以下の2つの変数の値を0以外にしたとき、少し画面がちらつきます。
+//タブが選択されたとき表示する、ファイル先頭からの行数。#DispMode=0で有効
+//0以下の時は表示しない。
+#DispHeadLinesNum = 3;
+//
+//タブが選択されたとき表示する、カーソル前後の行数。#DispMode=0で有効
+//0以下の時は表示しない。#DispAroundLinesNum×2＋1行表示する。
+#DispAroundLinesNum = 0;
+
+// 設定 (以下を変更すると適切に動作しなくなる可能性があります。)
+#code_dlg = 0x01;
+#code_main_tab = 0x02;
+$name_main_tab = "main_tab";
+#code_search_combo = 0x04;
+$name_search_combo = "search_combo";
+#key_esc = 0x1B;
+
+INIT:
+
+	// 田楽DLLのロード
+	loaddll hidemarudir + "\\DengakuDLL.dll";
+	if( !result ){
+		message "DLL をロードできませんでした。";
+		endmacro;
+	}
+
+	// DLLのバージョンチェック
+	$DLLVer = dllfuncstr("GETVERSION");
+	if( val(leftstr($DLLVer, 1)) < 2 ){
+		message "このマクロの実行には Ver.2.00 以降の田楽ＤＬＬが必要です。";
+		freedll;
+		endmacro;
+	}
+
+	// 最初のキーを設定する。
+	call GetKeyState2 #Key, #ReverseMod;
+	if( ##return & 0x002 ){
+		#First = ##return;
+		debuginfo "First:" + hex(#First);
+	}
+
+MAIN:
+
+	title $this_macro + " - タブを変更するダイアログを表示しています。";
+
+	call disp_dlg;
+	freedll;
+
+	#target_order = findhidemaru( $$return );
+	if( #target_order == -1 ){
+		openfile "/h " + $$return;
+		#target_order = findhidemaru( $$return );
+	}
+	setactivehidemaru( #target_order );
+
+endmacro;
+
+disp_dlg:
+
+	call dlg_init;
+	if( !dllfunc("SHOWDIALOG", hidemaruhandle(0), 1) )	call ERROR;
+
+	##now = tickcount;
+	##ctrl_code = 0;
+	$$file_name = filename2;
+	##tab_order = taborder;
+	##disable_time = #time_to_exit + #exit_cond / 2 * 50;
+
+	while( tickcount <= ##now + ##disable_time ){
+		debuginfo "-- " + str(tickcount % 10000) + " -- " + str(##now % 10000);
+		debuginfo "Exit until " + str(##disable_time);
+		refreshdatetime;
+
+		// 何かキー（文字以外でも）が押されているとき、そのキーコードetcを取得。
+		call GetKeyState2 #Key, #ReverseMod;
+		debuginfo "OldKey: " + hex(#Key) + " ##return: " + hex(##return);
+		// ##returnが0の時、直近の0以外の#Keyを##returnと見なす。∵"終了判定"の条件Eをtrueにするため。
+		if( ##return == 0 )	##return = #Key;
+		// 最初のキーを設定する(念のため)。
+		if( #First == 0 && ##return & 0x002 ){
+			#First = ##return;
+			debuginfo "First:" + hex(#First);
+		}
+
+//		// 再ループ判定: 同じ文字キーが押されっぱなしか、全く押されてないとき
+//		debuginfo "IF: reloop";
+//		if( 0 < #exit_cond
+//		&& ( #Key == ##return || (##return & 0x0002) == 0 ) ){
+//			#Key = ##return;
+//			if( #exit_cond == 2 )	##now = tickcount;
+//			continue;
+//		}
+		#Key = ##return;
+		debuginfo "Key:" + hex(#Key);
+
+		// 終了判定:「文字キーが押された」かつ「その文字キーが最初と異なる」かつ「修飾キーの最初との違いが#ReverseModの有無以外」
+		//TODO: #exit_cond=1でコンボボックスから戻ってきたとき、戻った直後に終了する(#disable_timeが反映されない)のは、仕様です。
+		//TODO: 違う文字を打っても終了しないのを修正。
+		debuginfo "IF: end";
+		if( 0 < #exit_cond											//A
+		&& dllfuncstr("GETFOCUSEDCTRL") == $name_main_tab			//B
+		&& ##return & 0x0002 == 2									//C
+		&& #First != ##return										//D
+		&& (#First / 0x0010) ^ (##return / 0x0010) != #ReverseMod	//E
+		){
+			debuginfo "  true";
+			if( val(dllfuncstr("GETCTRLSTATE")) == taborder + 1 ){		// 起動時のタブを表示中の時。
+				//call ExecCmdLite ##return, $IniFile, #ExecCommand;
+				##disable_time = #time_to_change_focus;
+				continue;
+			}else{
+				break;
+			}
+		}
+
+		// コンボボックスにカーソルがあるときは、終了しない。
+		if( dllfuncstr("GETFOCUSEDCTRL") == $name_search_combo ){
+			debuginfo "focused in ComboBox";
+			##now = tickcount;
+			##disable_time = #time_to_exit;
+		}
+
+		// ダイアログの変更内容による処理分岐。
+		##ctrl_code = val(dllfuncstr("WAITCTRLNOTIFY", 10));
+		debuginfo "Code: " + str(##ctrl_code);
+		if( iskeydown(#key_esc) ){		// Escキーが押下またはキャンセルされた。
+			$$file_name = filename2;
+			break;
+		}else if( ##ctrl_code & #code_dlg ){		// Enterが押された。
+			if( dllfuncstr("GETFOCUSEDCTRL") != $name_main_tab ){		// メインタブにフォーカスがない。
+				// コンボボックスに入力されているファイル名(らしきもの)を開く。
+				call get_entered;
+				$$file_name = $$return;
+			}
+			break;
+		}else if( ##ctrl_code == 0x00 ){		// タブにフォーカスが当たった。以下、意味のないコード‥‥‥
+			debuginfo "focused in Tab.";
+			//$$file_name = filename2;
+			##disable_time = #time_to_exit;
+			continue;
+		}else if( ##ctrl_code & #code_main_tab ){	// タブが切り替わった。
+			debuginfo "Tab Changed";
+			// このタブで終了したときに開く、ファイル名を取得する。
+			##tab_order = val( dllfuncstr("GETCTRLSTATE", $name_main_tab) ) - 1;
+			##hm_tab_order = hidemaruorder(gettabhandle( true, 0, ##tab_order ));
+			$$file_name = filename2[##hm_tab_order];
+			#a = dllfunc( "SETDLGTITLE", $this_macro + " - " + filename2[##hm_tab_order] );
+
+			// ダイアログを閉じるまでの時間を再設定する。
+			if( taborder == ##tab_order )
+					##disable_time = #time_to_exit;
+			//else	##disable_time = #time_to_exit_if_change;
+			##now = tickcount;
+//		}else if( ##ctrl_code & #code_search_combo ){	// コンボボックスの内容が変更された
+			//TODO: 変更に応じて、選択されるリストの項目を変更する。
+//			##disable_time = 10000;
+//			##now = tickcount;
+		}
+
+	}////END: while( tickcount <= ##now + ##disable_time )
+
+	title $this_macro + " - アクティブタブを変更しています。しばらくお待ちください。";
+	if( !dllfunc("ENDDIALOG") )	call ERROR;
+
+return $$file_name;
+
+dlg_init:
+
+	##dlg_width = windowwidth - 17;
+
+	// タブコントロールを追加する。
+	if( dllfunc("NEWDIALOG", $this_macro, ##dlg_width, "0 0 window") == 0
+		|| dllfunc("NEWCONTROL", "tab", $name_main_tab, "") == 0
+		|| dllfunc("SETCTRLNOTIFY", "", str(#code_main_tab) ) == 0
+		|| dllfunc("SETFOCUSEDCTRL", $name_main_tab) == 0
+	//	|| dllfunc("NEWCONTROL", "okcancel", "", "") == 0
+		){
+			call MAKEDLG_ERROR;
+	}
+
+	// 設定のファイルヒストリ数を取得する。-> コンボボックスの表示数にも利用
+	openreg "CURRENTUSER", "Software\\Hidemaruo\\Hidemaru\\Env";
+	#hist_num = getregnum("FileHist");
+	closereg;
+
+	// コンボボックスコントロールを追加する。
+	if( dllfunc("NEWDLGPAGE", "page" + str(taborder), 40) == 0
+		|| dllfunc("NEWCONTROL", "combo", $name_search_combo, "!") == 0
+		|| dllfunc("SETCTRLNOTIFY", "", "4") == 0
+		|| dllfunc("SETCTRLWIDTH", "", ##dlg_width ) == 0
+		|| dllfunc("SETCTRLHEIGHT", "", #hist_num ) == 0
+	//	|| dllfunc("SETCTRLSORT", "", "yes" ) == 0
+
+	//	|| dllfunc("ENABLECTRL", 0, "head") == 0
+
+	//	|| (#DispHeadLinesNum < 1
+	//		&& dllfunc("NEWCONTROL","mledit","head","") == 0
+	//		&& dllfunc("SETCTRLHEIGHT", "head", 0) == 0
+	//		&& dllfunc("ENABLECTRL", 0, "head") == 0)
+	//	|| (#DispAroundLinesNum < 1
+	//		&& dllfunc("NEWCONTROL", "mledit", "current", "") == 0
+	//		&& dllfunc("SETCTRLHEIGHT", "current", 0) == 0
+	//		&& dllfunc("ENABLECTRL", 0, "current") == 0)
+	){
+		call MAKEDLG_ERROR;
+	}else{
+		// コンボボックスの選択肢に、カレントフォルダのファイル一覧を追加。
+		#j = dllfunc("ENUMPATH", ". *.*");
+		$file = dllfuncstr("FINDNEXT");
+		while( $file != "" ){
+			##j = dllfunc("SETCTRLITEM", $name_search_combo, $file );
+			$file = dllfuncstr("FINDNEXT");
+		}
+		// 同じく、ヒストリを追加。
+		while( ##k < #hist_num ){
+			//##j = dllfunc("SETCTRLITEM", "", "!" + leftstr("00", 2 - strlen(str(##k))) + str(##k) + ":" + getfilehist(##k) );
+			##j = dllfunc("SETCTRLITEM", $name_search_combo, "!" + str(##k) + ":" + getfilehist(##k) );
+			##k = ##k + 1;
+		}
+	}
+
+	// タブのタイトルとして、ファイル名を設定する。
+	##i = 0;
+	while( ##i <= tabtotal - 1 ){
+		##j = dllfunc("SETCTRLITEM", $name_main_tab, "page" + str(##i) + "," + basename2[gettabhandle( true, 0, ##i )], "");
+		##i = ##i + 1;
+	}
+
+	// 起動したときのカレントタブを設定する。
+	//TODO: 起動したときに、「次のタブ」をカレントにできるようにもする。
+	##j = dllfunc("SETCTRLSTATE", $name_main_tab, str(taborder + 1) );
+
+return;
+
+MAKEDLG_ERROR:
+
+	freedll;
+	endmacro;
+
+return;
+
+ERROR:
+
+	freedll;
+	endmacro;
+
+return;
+
+GetKeyState2:
+//Arg:#キーコード("Ret"を参照), #ReverseMod [,keypressed]
+//Ret:#キーコード(0x0001=修飾キー有,0x0002=文字キー有,0x0010=Shift,0x0020=Ctrl,0x0040=Alt,0x0100～0xFE00=キーコード(16～18をのぞく)。0xFF02=終了コード)
+
+	##key = 0x0000;
+	##i = 1;
+	while( ##i <= 0x91 ){
+		if( iskeydown( ##i ) ){
+			if( 0x10 <= ##i && ##i <= 0x12)	// 16≦##i≦18
+				##key = ##key | 0x0001				// 修飾キー有
+						| (0x0010 * ( ##i / 0x10 ) * ( 0x10 / ##i ))	// Shift
+						| (0x0020 * ( ##i / 0x11 ) * ( 0x11 / ##i ))	// Ctrl
+						| (0x0040 * ( ##i / 0x12 ) * ( 0x12 / ##i ));	// Alt
+			else	##key = ##key | (##i * 0x0100) | 0x0002;
+		}
+		##i = ##i + 1;
+	}
+
+	//押されていたCtrl,Shift,Altキーが離されたときで、それが#ReverseModじゃないとき→終了コード
+	if( 0x0001 & ##1
+	&& (0x0001 & ##key) == 0
+	&& ((##1 / 0x0010) ^ (##key / 0x0010) != ##2) ){
+		##key = 0xFF02;
+	}
+
+	debuginfo "GetKeyState2: " + hex(##key) + " :S" + hex(##key & 0x0010) + ":C" + hex(##key & 0x0020) + ":A" + hex(##key & 0x0040);
+
+return ##key;
+
+get_entered:
+//TODO: 履歴じゃないときに、それが存在するかチェック
+//TODO: フォルダの時に、アクティブフォルダを切り替える。(それをどこかに表示する。)
+//TODO: アクティブフォルダ内のファイル一覧を表示する
+//TODO: フォルダ+ファイルの入力で、まだフォルダしか入力されていないときに、そのフォルダ内のフォルダ・ファイルを選択可能にする。
+
+	##selected_num = val(dllfuncstr("GETCTRLSTATE", $name_search_combo));
+	if( 0 < ##selected_num ){
+		$$selected_text = dllfuncstr("GETCTRLSTRING", $name_search_combo);
+		$$file_name = midstr( $$selected_text, strstr( $$selected_text, ":" ) + 1, strlen( $$selected_text ));
+	}else{
+		$$file_name = getfilehist( ##selected_num - 1);
+	}
+
+return $$file_name;
+
+get_detail:
+//Arg: ##activetab, ##buf
+//Ret: アクティブタブの本文
+
+	setactivehidemaru ##1;
+
+	##orgx = column;
+	##orgy = lineno;
+	$$line_str = "--------------------";
+	if( #DispHeadLinesNum > 0 ){
+		movetolineno 1, #DispHeadLinesNum;
+		$$head_str = "\n" + gettext2( 0, 1, linelen2, #DispHeadLinesNum )  + "\n--------------------";
+	}
+	if( #DispAroundLinesNum > 0 ){
+		movetolineno 1, ##orgy + #DispAroundLinesNum;
+		$$cursor_str = "\n" + gettext2( 0, ##orgy - #DispAroundLinesNum, linelen2, ##orgy + #DispAroundLinesNum ) + "\n--------------------";
+	}
+
+	movetolineno ##orgx+1, ##orgy;
+	setactivehidemaru ##2;
+
+return $$line_str + $$head_str + $$cursor_str;

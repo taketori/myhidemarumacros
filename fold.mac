@@ -1,0 +1,27 @@
+// fold.mac
+// Copyright (C) 2006 taketori <taketori AT x10d DOT jp>
+// http://www.x10d.jp/
+// 秀丸エディッタで、「折りたたみ用の余白」を表示させずに折りたたみするマクロ。
+//
+//2007-02-17  taketori  <taketori(delete between parentheses)@x10d.jp>
+//	* ver 1.0.1:
+//	* 「全て折りたたみ」に対応: Shiftキーが押されていたら「全て折りたたみ」モードになる。
+//	* マクロ実行前の状態によらず、常に余白を表示しないようにした。: 余白を表示させたくないときだけこのマクロを実行するはずだから。
+//
+//2006-04-08  taketori  <taketori AT x10d DOT jp>
+//	* Ver 1.0.0: 折り畳んだときに、余白を表示しないようにする。（折り畳まれる前に、余白が表示されていない場合）
+//
+
+#IsDispFoldingBar = getconfig("FoldingTwigBar");
+
+if( iskeydown(0x10) )	// Shiftが押下されている
+	foldall;
+else
+	fold;
+
+// 余白を消す。
+// "本マクロ実行前後で「折りたたみ用の余白」表示状態を同一にする" ときは、A行をコメントアウトしてB行行頭のコメント記号を外す。
+config "xFoldingTwigBar:0";		// ← A
+//config "xFoldingTwigBar:" + str( #IsDispFoldingBar );		// ← B
+
+saveconfig;

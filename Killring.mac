@@ -1,0 +1,361 @@
+// clipboardring.mac
+// Copyright (C) 2006 taketori <taketori@x10d.jp>
+// http://www.x10d.jp/
+// Emacsのキルリング風にその場（カーソル位置）でクリップボード履歴を表示する。
+// ショートカットキーから起動したときはそのキーを、メニューをクリックしたときはマウス以外の最初に押したキーを、メニューからEnterを押して起動したときはEnterを、それぞれ押すたびに次を表示する。
+// （修飾キー（Ctrl/Shift/Alt）を押している間は、操作継続中と見なす。修飾キーを併用するときは修飾キー以外を押したときに次を表示。）
+// クリップボードの中身を次々にペーストしたいときは、修飾キーからいったん手を離す。
+// 取り出したクリップボードの順番は変更しない。
+// （秀丸の履歴では順番は変わりませんが、別のクリップボード履歴管理ソフトでは変化します。）
+// 逆回転はできるけど、履歴の先頭→最後への移動はできない（逆順は行き過ぎたときに戻すためのものだから、先頭→最後の移動は本質的でない。）。
+// 逆回転をするには、マクロ中の#ReverseModを必要に応じて適切に変更する。マクロ実行中、次の履歴を表示するキーと#ReverseModを押すと逆回転する。（例：#ReverseModがShiftの時、Ctrl+Vで起動するとCtrl+Shift+Vで逆回転。Ctrl+Shift+Vで起動したらCtrl+Vで逆回転）
+// TODO:マニュアルを書く。
+// TODO:ウィンドウ分割でも部分編集中でもないとき、ウィンドウを分割してそこに履歴一覧を表示。
+
+//ChangeLog
+//2006-06-25  taketori  <taketori@x10d.jp>
+//	* SplitWindow: 窓を分割して、下半分に履歴の一覧を表示する。作ってみたけど、色々と考慮することが多く、DispSBarや逆回転機能でもたいがいの用は足りるので、現バーションでは保留（動作しない）。
+//	* GetBeforeAfter: すべての履歴の1行目を取得する。
+//	* DispSBar: （#DispNext=2のとき）ステータスバーに次（逆順の時は前）の履歴の1行目を表示。ステータスバーが表示されていないときに実行すると、動作がもたつく。
+//	* ver 1.0.8:
+//
+//2006-06-21  taketori  <taketori@x10d.jp>
+//	* PasteAndCountUp: InsClipから改名。履歴を保存していないときに対応。
+//	* ver 1.0.7:
+//
+//2006-06-14  taketori  <taketori@x10d.jp>
+//	* MAIN: 不要なtitle文を削除。
+//	* ver 1.0.6: ExecCmdLite [終了時、最後に押したキーに割り当てられている秀丸の機能を実行する。既知のバグあり。]
+//
+//2006-06-12  taketori  <taketori@x10d.jp>
+//	* ver 1.0.5: 履歴の番号をキャプションに表示。コメントの修正（バージョンアップ履歴の明らかな誤りも）
+//
+//2006-06-02  taketori  <taketori@x10d.jp>
+//	* MAIN: （ほとんど意味がないけど）if文を少なくするための"BRANCH"を作ってみた。
+//	* ver 1.0.4: 任意のキーで反対の向きに移動する（最初にそのキーが押されてなかったら押されたときに	逆順、最初に押されていたら押されていないときに逆順）。およびその関係のアルゴリズム変更。
+//
+//2006-05-31  taketori  <taketori@x10d.jp>
+//	* ver 1.0.3: 1.0.2で安易なバグが紛れ込んだのを修正。
+//
+//2006-05-28  taketori  <taketori@x10d.jp>
+//	* ver 1.0.2: ちょっとアルゴリズムの変更。動作の改善。
+//
+//2006-03-25  taketori  <taketori@x10d.jp>
+//	* ver 1.0.1: 1番目の履歴から2番目の履歴を表示するまでしばらく時間がかかったのを修正。
+//	* ちょっとリファクタリング。および、アルゴリズムの見直し。
+//
+// 2006-02-05  taketori  <taketori@x10d.jp>
+//	* ver 1.0.0: Release.
+
+////// 設定 //////ここから
+// 特に断りのない限り、以下の各項目のいずれも論理和による指定が可能です。
+
+//// 逆順に表示するときの修飾キー。1=Shift, 2=Ctrl, 4=Alt
+#ReverseMod = 1;
+
+//// "次の履歴"をどこに表示するか。0=表示しない, 1=キャプション, 2=ステータスバー。論理和不可!!
+// 0=キャプションには履歴番号を表示します。また、#DispHistoryも0なら動作が若干(本当にちょっとだけ)速くなります。
+// 2=キャプションには履歴番号を表示します。また、起動前にステータスバーが非表示の時は、起動中だけ表示しますが、起動時に文字キーをちょっと長めに（約1秒）押さないとうまく動作しません。
+#DispNext = 0;
+
+//// ウィンドウを分割して履歴一覧を表示するか。0=しない, 0以外=する
+// 分割した下半分に、履歴の先頭行の一覧を同じタブのファイル末に挿入した部分を表示します。
+#DispHistory = 1;
+
+//// 最後に押されたキーに応じてコマンドを実行するか。0=しない, 0以外=する
+#ExecCommand = 1;
+
+//////////////////ここまで
+//NOTE: #ReverseModは必ず1バイトで利用。#First^#Key == #ReverseMod*0x0010 みたいに使わない。
+//	∵ #Keyは、修飾キーの有無によって1バイト目の値が変わる。ex. [V]と[Shift+V]
+//		→そのままで評価したら、例のようなときに"2つのキーの違い(XOR)が#ReverseMod*0x10"とならない。
+//	⇒ #Key/0x10（16との商）を用いて評価する。
+//NOTE: 配列変数のオーバーフローをなくすために、履歴の一覧の取得を10ごとにしている。
+//NOTE: 履歴を保存していないときは、なにも起きない（終了しない）。
+
+$TempMacro = macrodir + "\\" + currentmacrobasename + ".tmp";
+$IniFile = macrodir + "\\Hm.rsc";
+
+call DispSBar #DispNext & 2 / 2, #StatusBar;
+#StatusBar = ##return;
+
+MAIN:
+
+debuginfo 0;
+debuginfo "BEGIN----->";
+#TryCount = 0;
+
+disablebreak;
+
+////BRANCH////////////START
+//call InsClip #TryCount;
+//#TryCount = ##return;
+//call GetKeyState2 #Key, #ReverseMod, keypressed;
+//#First = ##return;
+//#Key = ##return;
+//debuginfo hex(#First);
+////BRANCH////////////FINISH
+//
+//「BRANCH」の間は、最初の1回しか実行されない部分。
+//if文をなるべく少なくしたい場合は、この部分のコメントを取り除く。さらに、以下の「//BRANCH」とコメントされている行を指示に従って書き換える。
+//ただし、書き換えたら、メニューからマウスクリックで起動したときの動作は保証できない。（ショートカットキーorメニューからEnterキーで起動したときの動作は変わらない。）
+//
+////指示語	書き換える内容	例：（書き換える前）→（書き換えた後） "～"や"…"は任意の文字列を表す。
+////BRANCH-	その行を削除する。「～  //BRANCH-」→「」
+////BRANCH+	その行を追加する。「//BRANCH+ ～」→「～」
+////BRANCH!	その行を「BRANCH!」より行末の文字列で書き換える。「～  //BRANCH! …」→「…」
+
+while( 1 ){
+	//何かキー（文字以外でも）が押されているとき、そのキーコードetcを取得。
+	call GetKeyState2 #Key, #ReverseMod, keypressed;
+	debuginfo "Now:  " + hex(##return) + ":S" + hex(##return & 0x0010) + ":C" + hex(##return & 0x0020) + ":A" + hex(##return & 0x0040);
+	//最初のキーを設定する。
+	if( #First == 0 ){	#First = ##return;		//BRANCH-
+		debuginfo "First:" + str(#First);
+	}
+
+	//「文字キーが押された」かつ「その文字キーが最初と異なる」かつ「修飾キーの最初との違いが#ReverseModの有無以外」→終了
+	if( (##return & 0x0002 == 2)
+	&& ( #First != ##return
+		&& (#First / 0x0010) ^ (##return / 0x0010) != #ReverseMod ) ){
+		call ExecCmdLite ##return, $IniFile, #ExecCommand;
+		debuginfo ">-----END";
+		break;
+	}
+
+	//同じ文字キーが押されっぱなしか、全く押されてないとき→ループを再評価
+	if( #Key == ##return || (##return & 0x0002) == 0 ){ #Key = ##return;	continue;}
+	#Key = ##return;
+	debuginfo "Key:" + hex(#Key);
+
+	//最初の1回（#TryCount==0 かつ #Direction != -1）以外→アンドゥ
+	if( #TryCount || #Direction == -1)	undo;		//BRANCH! undo;
+
+	//最初のキーと現在のキーとの違いが#ReverseMod→逆順。
+	#Direction = 1;		//昇順なら1，降順（逆回転）なら-1
+	if( (#First / 0x0010) ^ (#Key / 0x0010) == #ReverseMod ){
+		#TryCount = #TryCount - 2;
+		#Direction = -1;
+		debuginfo "Reverse:" + str(#TryCount);
+	}
+
+	//各種情報を色々なところに表示。
+	title currentmacrobasename + " - クリップボード履歴をカーソル位置に表示中 : " + str(#TryCount + 1) + "番目", 0;
+	if( #DispHistory || #DispNext ){
+		call GetBeforeAfter #TryCount, 10, #Direction;
+		//TODO: #DispNextが論理和で指定できるようにする。
+		title currentmacrobasename + " - " + leftstr($$return, strstr($$return, "\n")), #DispNext - 1;
+		//call SplitWindow #DispHistory, $$return, #TryCount;
+	}
+
+	//クリップボード履歴の文字列を貼り付ける。
+	call PasteAndCountUp #TryCount, #Direction;
+	#TryCount = ##return;
+
+}
+
+title 1;
+call DispSBar 0, #StatusBar;
+
+endmacro;
+
+GetKeyState2:
+//Arg:#キーコード("Ret"を参照), #ReverseMod [,keypressed]
+//Ret:#キーコード(0x0001=修飾キー有,0x0002=文字キー有,0x0010=Shift,0x0020=Ctrl,0x0040=Alt,0x0100～0xFE00=キーコード(16～18をのぞく)。0xFF02=終了コード)
+
+	##key = 0x0000;
+	##i = 1;
+	while( ##i <= 0x91 ){
+		if( iskeydown( ##i ) ){
+			if( 0x10 <= ##i && ##i <= 0x12)	// 16≦##i≦18
+				##key = ##key | 0x0001				// 修飾キー有
+						| (0x0010 * ( ##i / 0x10 ) * ( 0x10 / ##i ))	// Shift
+						| (0x0020 * ( ##i / 0x11 ) * ( 0x11 / ##i ))	// Ctrl
+						| (0x0040 * ( ##i / 0x12 ) * ( 0x12 / ##i ));	// Alt
+			else	##key = ##key | (##i * 0x0100) | 0x0002;
+		}
+		##i = ##i + 1;
+	}
+
+	//押されていたCtrl,Shift,Altキーが離されたときで、それが#ReverseModじゃないとき→終了コード
+	if( (0x0001 & ##1) && (0x0001 & ##key) == 0 && ((##1 / 0x0010) ^ (##key / 0x0010) != ##2) ){
+		##key = 0xFF02;
+	}
+
+return ##key;
+
+GetKeyState:
+//Arg:#key, [keypressed]
+//Ret:#キーコード(0x0001=修飾キー有,0x0002=その他のキー有,0x0010=Shift,0x0020=Alt,0x0030=Ctrl,0x0100～0xFE00=キーコード。0xFF01=修飾キーが離された)
+
+	$$a = "";
+	##i = 1;
+	#DecoKey = 0;
+	#OtherKey = 0;
+	while( ##i <= 0x91 ){
+		if( iskeydown( ##i ) ){
+			$$a = $$a + str( ##i ) + " ";
+			if( ##i >= 16 && ##i <= 18 )	#DecoKey = 1;
+			if( ##i <  16 || ##i >  18 )	#OtherKey = 1;
+		}
+		##i = ##i + 1;
+	}
+	if( ##1 && #DecoKey == 0 ){		//押されていたCtrl,Shift,Altキーが離されたとき→終了
+		#OtherKey = 1;
+		$$a = "END";
+	}
+
+return $$a;
+
+PasteAndCountUp:
+//Arg: #取得する履歴番号
+//Ret: #次の履歴番号
+
+	##cid = ##1;
+	if( ##cid < 0 )		##cid = 0;		//TODO: もうちょっと賢い処理を考える。もしくは、getcliphistでマイナスを与えてもクラッシュしないように要望する。
+
+	getcliphist ##cid;
+
+	if( result ){
+		paste;
+		while( ##i < ##cid ){
+			getcliphist ##cid;
+			##i = ##i + 1;
+		}
+		##ret = ##cid + 1;
+	}else if( ##cid != 0 ){			//=履歴を保存している＆履歴の最後まで到達
+		call PasteAndCountUp 0;		//最初に戻る。
+		##ret = ##return;
+	}
+
+return ##ret;
+
+//OBSOLUTE: 履歴をメニューで表示しようかと思ったが、諸般の事情により凍結。
+//getcliphist 0;
+//if( result ){
+//	beginclipboardread;
+//	$clipboardA = getclipboard;
+//	while( $clipboardA != "" ){
+//		message $clipboardA;
+//		$clipboard = $clipboard + $clipboardA;
+//		$clipboardA = getclipboard;
+//	}
+//	menu $clipboard;
+//}
+
+ExecCmdLite:
+// 押されたキーに割り当てられている機能を実行(簡易版)。
+// 簡易版じゃないものは、拙作のdispkeyfunc.macのExecCmd関数を参照。
+//Arg: #キーコード(GetKeyState2の関数ヘッダ参照), $IniFile, #ExecCommand
+//Ret: #sendmessageの実行結果
+
+// 簡易版の制限は、1,キー配置変更ごとにKEY.TXTの作成を必要とする、2,KEY.TXTの先頭に"[KEY]"と手入力する必要がある、3,WindowsMessageを使う、4,一部のコマンドは実行できない("TODO:"を参照) などがある。
+// 簡易版を使う理由は、1,一般的にキー配置はほぼ固定されている、2,外部DLL（AssignReg.dll）を使う必要がない、3,新たなファイル（マクロファイル）を作らない、4,貼り付けた直後に性急にやりたいことは「やり直し」ぐらい（経験則）なので複雑な機能は必要ない等である。
+//TODO: マクロ・メニュー・ヘルプなど名前が半角でコロンを含むコマンドへの対応、名前の先頭/最後に"..."があるコマンドへの対応。
+
+	if( ##3 ){
+		//NOTE: ##sendkey: すべてのキーを離して終了したとき=0。
+		##sendkey = getininum( $$2, "MESSAGE",
+						getinistr( hidemarudir + "\\KEY.TXT", "KEY",
+							leftstr( "Alt+", ##1 & 0x0040 / 0x0040 * 4 )
+							+ leftstr( "Shift+", ##1 & 0x0010 / 0x0010 * 6 )
+							+ leftstr( "Ctrl+", ##1 & 0x0020 / 0x0020 * 5 )
+							+ getinistr( $$2, "CODEKEY", str( ##1 / 0x0100 ) ) ) );
+		##result = sendmessage( hidemaruhandle(0), 0x0111, ##sendkey, 0 );
+	}
+
+return ##result;
+
+DispSBar:
+//Arg; #バーを表示するか(0/1), #バーが表示されていたか("Ret"参照。)
+//Ret: #1(起動前から表示)/#0
+//NOTE: 初期設定では必ず##2=0。後始末では##1=0, #sbar=初期設定の##1。
+
+	openreg "CURRENTUSER", "Software\\Hidemaruo\\Hidemaru\\Env";
+	##sbar = getregnum("StatusBar");
+	closereg;
+
+	if( ##1 ^ ##2 ^ ##sbar == 1 )
+		##temp = sendmessage( hidemaruhandle(0), 0x0111, 0x015A, 0 );	// 0x015A = 346
+
+//	if( ##1 || ##2 )	writeregnum "StatusBar", 1;
+//	closereg;
+//	envchanged;
+	//TODO: マクロでenvchangedすると、動作が不安定。要望を出す。レジストリの更新に時間がかかる？更新し終わったらresult=1を返すのがいいかも。
+
+return ##sbar;
+
+GetBeforeAfter:
+//Arg: #TryCount, #幅(0=次の履歴のみ, 0以外=#TryCount±幅の履歴), #一行の文字数(幅=0以外のとき有効), #Direction(昇順なら1，降順（逆回転）なら-1)
+//Ret: $要求された部分を改行区切りで。
+
+	##max = ##1 + ##2;
+
+//OBSOLUTE: 考えやすい配列になるけど、要素の番号とかぱっと見がわかりにくいのでやめる。
+//	if( ##2 < ##1 )	##magic = ##1 - ##2;
+//	##i = ##max;
+//	while( 0 <= ##i && ##max - ##i < 2 * ##2 + 1 ){
+//		getcliphist ##max;
+//		if( !result ){
+//			##max = ##max - 1;
+//			##i = ##max;
+//			continue;
+//		}
+//		beginclipboardread;
+//		$$a[##i-##magic+(##1+##2-##max)] = getclipboard;
+//		$$ret = $$ret + $$a[##i-##magic+(##1+##2-##max)];
+//		debuginfo "##i=" + str(##i) + " ##max=" + str(##max) + " $$a[" + str(##i-##magic+(##1+##2-##max)) + "]=" + $$a[##i-##magic+(##1+##2-##max)];
+//		##i = ##i - 1;
+//	}
+//
+//	while( 0 <= ##i ){
+//		getcliphist ##max;
+//		debuginfo "##i=" + str(##i);
+//		##i = ##i - 1;
+//	}
+//	debuginfo "NEXT(" + str(##1-##magic+(##1+##2-##max)+1) + "):"+ $$a[##1-##magic+(##1+##2-##max)+1];
+
+	//
+	while( ##i <= ##1 + ##2 && ##i < 2 * ##2 + 1 ){
+		getcliphist ##max;
+		if( !result ){
+			##max = ##max - 1;
+			##i = ##i + 1;
+			continue;
+		}
+		beginclipboardread;
+		$$a[##i] = getclipboard;
+		$$ret = $$a[##i] + "\n" + $$ret;
+		debuginfo "##i=" + str(##i) + " $$ret=" + $$ret + " $$a[" + str(##i) + "]=" + $$a[##i];
+		##i = ##i + 1;
+	}
+
+	$$ret = $$a[##2 - ##3] + "\n" + $$ret;
+	debuginfo $$ret;
+
+	//クリップボード履歴を元に戻すための処理。
+	while( ##i <= ##1 + ##2 ){
+		getcliphist ##max;
+		debuginfo "##i=" + str(##i);
+		##i = ##i + 1;
+	}
+
+return $$ret;
+
+SplitWindow:
+//Arg: #DispHistory, $履歴リスト, #履歴番号,
+//Ret:
+
+	##y = y;
+	##topy = screentopy;
+	gofileend;
+	goscreenend;
+	##split = splitstate;
+	if( splitstate == 0 )	split;
+	if( splitstate == 1 )	splitswitch;
+	if( ##3 != 0 )	undo;
+	insert midstr( $$2, strstr( $$2, "\n" ), strlen( $$2 ) );
+	down ##3;
+	##topy = screentopy;
+
+return ##topy * 10 + ##split;
