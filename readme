@@ -1,0 +1,5 @@
+=description
+Killring.mac: the clipboard macro to be aimed at display clipboard contentes by turns.
+ ctrl+tabGUI.mac: display tabs only when you press prescribed keys.
+dispkeyfun2.mac: display function-bar for certain time.
+fold.mac: never display foldbar-space all time when paragraphs are about to fold.
